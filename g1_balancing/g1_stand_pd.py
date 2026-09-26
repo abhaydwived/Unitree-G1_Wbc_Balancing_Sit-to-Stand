@@ -10,9 +10,7 @@ model = mujoco.MjModel.from_xml_path(XML_PATH)
 data = mujoco.MjData(model)
 
 
-# =========================================================
 # Load standing configuration
-# =========================================================
 
 stand_id = mujoco.mj_name2id(
     model,
@@ -29,16 +27,11 @@ mujoco.mj_resetDataKeyframe(
 mujoco.mj_forward(model, data)
 
 
-# =========================================================
 # Desired joint configuration
-# =========================================================
 
 q_des = data.qpos[7:].copy()
 
-
-# =========================================================
 # Gains
-# =========================================================
 
 Kp = np.array([
     # legs
@@ -72,17 +65,13 @@ Kd = np.array([
 ], dtype=float)
 
 
-# =========================================================
 # Simulation
-# =========================================================
 
 with mujoco.viewer.launch_passive(model, data) as viewer:
 
     while viewer.is_running():
 
-        # -------------------------------------------------
         # Current joint state
-        # -------------------------------------------------
 
         q = data.qpos[7:43]
 
@@ -93,10 +82,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
 
         qdot = data.qvel[6:35]
 
-
-        # -------------------------------------------------
         # Posture feedback
-        # -------------------------------------------------
 
         position_error = q_des - q
 
@@ -107,10 +93,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             + Kd * velocity_error
         )
 
-
-        # -------------------------------------------------
         # Gravity compensation
-        # -------------------------------------------------
 
         # MuJoCo computes generalized bias forces.
         # For a static configuration, this contains
@@ -119,16 +102,11 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         tau_gravity = data.qfrc_bias[6:35]
 
 
-        # -------------------------------------------------
         # Total joint torque
-        # -------------------------------------------------
 
         tau = tau_pd + tau_gravity
 
-
-        # -------------------------------------------------
         # Apply torque
-        # -------------------------------------------------
 
         data.ctrl[:] = tau
 
@@ -143,10 +121,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
 
         print("contacts:", data.ncon)
 
-
-        # -------------------------------------------------
         # Step simulation
-        # -------------------------------------------------
 
         mujoco.mj_step(model, data)
 

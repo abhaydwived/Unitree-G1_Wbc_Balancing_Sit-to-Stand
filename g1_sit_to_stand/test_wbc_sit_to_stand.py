@@ -85,13 +85,14 @@ step                = 0
 last_log_time       = -1.0
 wbc_active          = False
 wbc_transition_done = False
+paused              = False
 
 # Fallback-only counter (to detect persistent failure)
 fallback_streak = 0
 
 def key_callback(keycode):
     global step, last_log_time, wbc_active, wbc_transition_done
-    global com_des_wbc, q_des_wbc, fallback_streak
+    global com_des_wbc, q_des_wbc, fallback_streak, paused
     if keycode in (ord('r'), ord('R')):
         step                = 0
         last_log_time       = -1.0
@@ -104,8 +105,11 @@ def key_callback(keycode):
         data.qvel[:]  = 0.0
         mujoco.mj_forward(model, data)
         print("\n[Reset] Restarted.")
+    elif keycode == ord(' '):
+        paused = not paused
+        print(f"\n[Paused] {paused}")
 
-print(f"\n[Sim] KIN: 0->{TOTAL_DUR:.1f}s  |  WBC STAND: {TOTAL_DUR:.1f}s+  |  Press R to reset\n")
+print(f"\n[Sim] KIN: 0->{TOTAL_DUR:.1f}s  |  WBC STAND: {TOTAL_DUR:.1f}s+  |  Press R to reset  |  Press Space to pause\n")
 
 with mujoco.viewer.launch_passive(
     model, data, key_callback=key_callback
@@ -120,89 +124,90 @@ with mujoco.viewer.launch_passive(
         sim_time = step * DT
         traj_idx = min(step, N_last)
 
-        if not wbc_active:
-            # ── KINEMATIC phase ───────────────────────────────────────────────
-            if sim_time < 1.0:   phase = "KIN (sit) "
-            elif sim_time < 2.5: phase = "KIN (rise)"
-            else:                phase = "KIN (stand)"
-
-            q_now    = traj_q[traj_idx]
-            idx_next = min(traj_idx + 1, N_last)
-            dq       = np.zeros(model.nv)
-            mujoco.mj_differentiatePos(model, dq, DT, q_now, traj_q[idx_next])
-
-            data.qpos[:] = q_now
-            data.qvel[:] = dq
-            data.ctrl[:] = 0.0
-            mujoco.mj_forward(model, data)
-
-            forces = np.zeros(12)
-            tau    = np.zeros(wbc.nu)
-            solved = True
-
-            if step >= N_last:
-                wbc_active = True
-
-        else:
-            # ── WBC STAND phase ───────────────────────────────────────────────
-            phase = "WBC STAND "
-
-            # One-time transition: capture ACTUAL robot state as WBC target
-            if not wbc_transition_done:
-                wbc_transition_done = True
-                data.qpos[:] = traj_q[N_last]
-                data.qvel[:] = 0.0
+        if not paused:
+            if not wbc_active:
+                # ── KINEMATIC phase ───────────────────────────────────────────────
+                if sim_time < 1.0:   phase = "KIN (sit) "
+                elif sim_time < 2.5: phase = "KIN (rise)"
+                else:                phase = "KIN (stand)"
+    
+                q_now    = traj_q[traj_idx]
+                idx_next = min(traj_idx + 1, N_last)
+                dq       = np.zeros(model.nv)
+                mujoco.mj_differentiatePos(model, dq, DT, q_now, traj_q[idx_next])
+    
+                data.qpos[:] = q_now
+                data.qvel[:] = dq
+                data.ctrl[:] = 0.0
                 mujoco.mj_forward(model, data)
-
-                # Target = EXACTLY the current pose (zero initial error)
-                com_des_wbc = data.subtree_com[0].copy()
-                q_des_wbc   = data.qpos[7:36].copy()
-
-                pid  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
-                print(f"\n[WBC] Transition at t={sim_time:.2f}s")
-                print(f"      pelvis Z = {data.xpos[pid][2]:.3f}m")
-                print(f"      CoM      = ({com_des_wbc[0]:.3f}, {com_des_wbc[1]:.3f}, {com_des_wbc[2]:.3f})")
-                print(f"      Stabilisation started...\n")
-
-            # WBC solve
-            tau, qdd, forces, solved = wbc.solve(q_des_wbc, com_des_wbc)
-
-            if not solved:
-                fallback_streak += 1
-                # Robust PD fallback: stiff position hold
-                q_cur  = data.qpos[7:36].copy()
-                qd_cur = data.qvel[6:35].copy()
-                tau    = 200.0 * (q_des_wbc - q_cur) - 20.0 * qd_cur
-                tau    = np.clip(tau, wbc.tau_min, wbc.tau_max)
+    
                 forces = np.zeros(12)
+                tau    = np.zeros(wbc.nu)
+                solved = True
+    
+                if step >= N_last:
+                    wbc_active = True
+    
             else:
-                fallback_streak = 0
+                # ── WBC STAND phase ───────────────────────────────────────────────
+                phase = "WBC STAND "
+    
+                # One-time transition: capture ACTUAL robot state as WBC target
+                if not wbc_transition_done:
+                    wbc_transition_done = True
+                    data.qpos[:] = traj_q[N_last]
+                    data.qvel[:] = 0.0
+                    mujoco.mj_forward(model, data)
+    
+                    # Target = EXACTLY the current pose (zero initial error)
+                    com_des_wbc = data.subtree_com[0].copy()
+                    q_des_wbc   = data.qpos[7:36].copy()
+    
+                    pid  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+                    print(f"\n[WBC] Transition at t={sim_time:.2f}s")
+                    print(f"      pelvis Z = {data.xpos[pid][2]:.3f}m")
+                    print(f"      CoM      = ({com_des_wbc[0]:.3f}, {com_des_wbc[1]:.3f}, {com_des_wbc[2]:.3f})")
+                    print(f"      Stabilisation started...\n")
+    
+                # WBC solve
+                tau, qdd, forces, solved = wbc.solve(q_des_wbc, com_des_wbc)
+    
+                if not solved:
+                    fallback_streak += 1
+                    # Robust PD fallback: stiff position hold
+                    q_cur  = data.qpos[7:36].copy()
+                    qd_cur = data.qvel[6:35].copy()
+                    tau    = 200.0 * (q_des_wbc - q_cur) - 20.0 * qd_cur
+                    tau    = np.clip(tau, wbc.tau_min, wbc.tau_max)
+                    forces = np.zeros(12)
+                else:
+                    fallback_streak = 0
+    
+                data.ctrl[:] = tau
+                mujoco.mj_step(model, data)
 
-            data.ctrl[:] = tau
-            mujoco.mj_step(model, data)
+            if step < N_last:
+                step += 1
+
+            # ── Logging ───────────────────────────────────────────────────────────
+            if sim_time - last_log_time >= 0.5:
+                last_log_time = sim_time
+                pid  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+                p    = data.xpos[pid]
+                com  = data.subtree_com[0]
+                fz_l = forces[2] if forces.size >= 3 else 0.0
+                fz_r = forces[8] if forces.size >= 9 else 0.0
+                fb   = f" [FB:{fallback_streak}]" if fallback_streak > 0 else ""
+                print(
+                    f"  t={sim_time:5.2f}s [{phase}]  "
+                    f"Z={p[2]:.3f}m  "
+                    f"CoM_X={com[0]:.3f}  "
+                    f"tau_max={np.max(np.abs(tau)):.1f}  "
+                    f"Fz=({fz_l:.0f},{fz_r:.0f})  "
+                    f"wbc={'Y' if solved else 'N'}{fb}"
+                )
 
         viewer.sync()
-
-        if step < N_last:
-            step += 1
-
-        # ── Logging ───────────────────────────────────────────────────────────
-        if sim_time - last_log_time >= 0.5:
-            last_log_time = sim_time
-            pid  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
-            p    = data.xpos[pid]
-            com  = data.subtree_com[0]
-            fz_l = forces[2] if forces.size >= 3 else 0.0
-            fz_r = forces[8] if forces.size >= 9 else 0.0
-            fb   = f" [FB:{fallback_streak}]" if fallback_streak > 0 else ""
-            print(
-                f"  t={sim_time:5.2f}s [{phase}]  "
-                f"Z={p[2]:.3f}m  "
-                f"CoM_X={com[0]:.3f}  "
-                f"tau_max={np.max(np.abs(tau)):.1f}  "
-                f"Fz=({fz_l:.0f},{fz_r:.0f})  "
-                f"wbc={'Y' if solved else 'N'}{fb}"
-            )
 
         elapsed = time.perf_counter() - t0
         if DT - elapsed > 0:
